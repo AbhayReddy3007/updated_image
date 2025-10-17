@@ -1,4 +1,4 @@
-# streamlit_image_single_flow_with_dept_iterative_feedback.py
+# app.py  -- fixed: persistent generated-image rendering so Edit button works after generation
 import os
 import re
 import uuid
@@ -354,7 +354,7 @@ with left_col:
     prompt = st.text_area("Enter prompt (for generation or editing)", key="main_prompt", height=140, placeholder="If you uploaded an image this will edit that image; otherwise it will generate new images.")
     num_images = st.slider("Number of images to generate (when generating)", min_value=1, max_value=4, value=1, key="num_images_slider")
 
-    # Run button
+    # Run button (generation happens here and results are appended to session_state)
     if st.button("Run"):
         prompt_text = (prompt or "").strip()
         if not prompt_text:
@@ -362,7 +362,7 @@ with left_col:
         else:
             base_image = st.session_state.get("edit_image_bytes")
             if base_image:
-                # EDIT FLOW
+                # EDIT FLOW (uploaded image -> Nano Banana)
                 with st.spinner("Editing image with Nano Banana..."):
                     edited = run_edit_flow(prompt_text, base_image)
                     if edited:
@@ -386,7 +386,7 @@ with left_col:
                     else:
                         st.error("Editing failed or returned no image.")
             else:
-                # GENERATION FLOW
+                # GENERATION FLOW (Imagen) - append images to session state
                 with st.spinner("Generating images with Imagen..."):
                     generated = generate_images_from_prompt(prompt_text, dept=dept, style_desc=style_desc, n_images=num_images)
                     if generated:
@@ -402,31 +402,40 @@ with left_col:
                             short = os.path.basename(fname) + str(i)
                             key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, short).hex[:8]
 
-                            # store generated image with metadata
+                            # store generated image with metadata (persistent)
                             entry = {"filename": fname, "content": b, "key": key_hash}
                             st.session_state.generated_images.append(entry)
-
-                            # display image with download + edit beside it
-                            show_image_safe(b, caption=os.path.basename(fname))
-
-                            # place Download and Edit buttons side-by-side
-                            col_dl, col_edit = st.columns([1, 1])
-                            with col_dl:
-                                st.download_button(
-                                    "⬇️ Download",
-                                    data=b,
-                                    file_name=os.path.basename(fname),
-                                    mime="image/png",
-                                    key=f"dl_gen_{key_hash}"
-                                )
-                            with col_edit:
-                                if st.button("✏️ Edit this image (load into editor)", key=f"edit_gen_{key_hash}"):
-                                    st.session_state["edit_image_bytes"] = b
-                                    st.session_state["edit_image_name"] = os.path.basename(fname)
-                                    st.experimental_rerun()
-
                     else:
                         st.error("Generation failed or returned no images.")
+
+    # -------------------------
+    # Render generated images persistently (outside Run block so buttons survive reruns)
+    # -------------------------
+    if st.session_state.get("generated_images"):
+        st.markdown("### Recently Generated")
+        # show the most recent N generated images in the main column
+        for entry in reversed(st.session_state.generated_images[-12:]):
+            fname = entry.get("filename")
+            b = entry.get("content")
+            key_hash = entry.get("key") or uuid.uuid5(uuid.NAMESPACE_DNS, os.path.basename(fname)).hex[:8]
+
+            show_image_safe(b, caption=os.path.basename(fname))
+            col_dl, col_edit = st.columns([1, 1])
+            with col_dl:
+                st.download_button(
+                    "⬇️ Download",
+                    data=b,
+                    file_name=os.path.basename(fname),
+                    mime="image/png",
+                    key=f"dl_gen_{key_hash}"
+                )
+            with col_edit:
+                # this Edit button now reliably works because it's rendered on every run
+                if st.button("✏️ Edit this image (load into editor)", key=f"edit_gen_{key_hash}"):
+                    st.session_state["edit_image_bytes"] = b
+                    st.session_state["edit_image_name"] = os.path.basename(fname)
+                    # rerun so the left editor area updates to show the loaded image
+                    st.experimental_rerun()
 
     # Clear editor button (switch to generation)
     if st.button("Clear editor (switch to generation)"):
@@ -437,7 +446,7 @@ with left_col:
 with right_col:
     st.subheader("📂 History")
 
-    # Generated images
+    # Generated images (history column)
     if st.session_state.get("generated_images"):
         st.markdown("### Generated Images")
         for idx, entry in enumerate(reversed(st.session_state.generated_images[-20:])):
