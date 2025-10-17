@@ -523,7 +523,7 @@ with left_col:
                 with st.spinner("Generating images with Imagen..."):
                     generated = generate_images_from_prompt(prompt_text, dept=dept, style_desc=style_desc, n_images=num_images)
                     if generated:
-                        st.success(f"Generated {len(generated)} image(s).")
+                        
                         for i, b in enumerate(generated):
                             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             fname = f"outputs/generated/gen_{ts}_{i}.png"
