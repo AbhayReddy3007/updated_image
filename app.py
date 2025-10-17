@@ -106,19 +106,21 @@ def sanitize_prompt(text: str) -> str:
         ln = line.strip()
         if not ln:
             continue
+        # Skip lines that start with 'Option', 'Key', 'Apply', 'Specificity', 'Keywords', etc.
         if re.match(r'^(Option|Key|Apply|Specificity|Keywords)\b', ln, re.I):
             continue
         if re.match(r'^\d+[\.\)]\s*', ln):
             continue
+        # Skip short header-like lines that end with colon (e.g., "Key Improvements:")
         if len(ln) < 80 and ln.endswith(':'):
             continue
+        # Skip lines that look like list bullets (e.g., starting with '-')
         if ln.startswith('-') or ln.startswith('*'):
             continue
         lines.append(ln)
     cleaned = ' '.join(lines)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned or text
-
 
 def safe_get_enhanced_text(resp):
     if resp is None:
@@ -132,7 +134,6 @@ def safe_get_enhanced_text(resp):
             pass
     return str(resp)
 
-
 def get_image_bytes_from_genobj(gen_obj):
     if isinstance(gen_obj, (bytes, bytearray)):
         return bytes(gen_obj)
@@ -144,7 +145,6 @@ def get_image_bytes_from_genobj(gen_obj):
             if hasattr(gen_obj.image, attr):
                 return getattr(gen_obj.image, attr)
     return None
-
 
 def show_image_safe(image_source, caption="Image"):
     try:
@@ -183,7 +183,6 @@ def init_vertex(project_id, credentials_info, location="us-central1"):
         st.error(f"Vertex init failed: {e}")
         return False
 
-
 def get_imagen_model():
     if MODEL_CACHE["imagen"]:
         return MODEL_CACHE["imagen"]
@@ -196,7 +195,6 @@ def get_imagen_model():
         st.error(f"Failed to load Imagen model: {e}")
         return None
 
-
 def get_nano_banana_model():
     if MODEL_CACHE["nano"]:
         return MODEL_CACHE["nano"]
@@ -208,7 +206,6 @@ def get_nano_banana_model():
     except Exception as e:
         st.error(f"Failed to load Nano Banana model: {e}")
         return None
-
 
 def get_text_model():
     if MODEL_CACHE["text"]:
@@ -259,6 +256,7 @@ def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
                 if cleaned:
                     enhanced_prompt = cleaned
             except Exception as e:
+                # fallback to original prompt
                 st.warning(f"Prompt refinement failed, using raw prompt. ({e})")
                 enhanced_prompt = prompt
 
@@ -276,7 +274,6 @@ def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
         if b:
             out.append(b)
     return out
-
 
 def run_edit_flow(edit_prompt, base_bytes):
     """Edit image bytes using Gemini Nano Banana. Returns edited bytes or None."""
@@ -407,7 +404,29 @@ with left_col:
 
                             # store generated image with metadata
                             entry = {"filename": fname, "content": b, "key": key_hash}
-                            st.session_state.generated_images.append(entry)\n                            # display image with download + edit beside it\n                            show_image_safe(b, caption=os.path.basename(fname))\n\n                            # place Download and Edit buttons side-by-side\n                            key_hash = entry.get("key")\n                            col_dl, col_edit = st.columns([1,1])\n                            with col_dl:\n                                st.download_button("⬇️ Download", data=b, file_name=os.path.basename(fname), mime="image/png", key=f"dl_gen_{key_hash}")\n                            with col_edit:\n                                if st.button("✏️ Edit this image (load into editor)", key=f"edit_gen_{key_hash}"):\n                                    st.session_state["edit_image_bytes"] = b\n                                    st.session_state["edit_image_name"] = os.path.basename(fname)\n                                    st.experimental_rerun()\n\n                    else:\n                        st.error("Generation failed or returned no images.")
+                            st.session_state.generated_images.append(entry)
+
+                            # display image with download + edit beside it
+                            show_image_safe(b, caption=os.path.basename(fname))
+
+                            # place Download and Edit buttons side-by-side
+                            col_dl, col_edit = st.columns([1, 1])
+                            with col_dl:
+                                st.download_button(
+                                    "⬇️ Download",
+                                    data=b,
+                                    file_name=os.path.basename(fname),
+                                    mime="image/png",
+                                    key=f"dl_gen_{key_hash}"
+                                )
+                            with col_edit:
+                                if st.button("✏️ Edit this image (load into editor)", key=f"edit_gen_{key_hash}"):
+                                    st.session_state["edit_image_bytes"] = b
+                                    st.session_state["edit_image_name"] = os.path.basename(fname)
+                                    st.experimental_rerun()
+
+                    else:
+                        st.error("Generation failed or returned no images.")
 
     # Clear editor button (switch to generation)
     if st.button("Clear editor (switch to generation)"):
