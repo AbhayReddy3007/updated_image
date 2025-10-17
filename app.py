@@ -19,7 +19,7 @@ except Exception:
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="AI Image Generator + Editor", layout="wide")
-st.title("AI Image Generator + Editor (with Department)")
+st.title("AI Image Generator + Editor")
 
 # ---------------- Safe session initialization ----------------
 def safe_init_session():
@@ -349,8 +349,8 @@ with left_col:
             show_image_safe(st.session_state["edit_image_bytes"], caption=f"Editor loaded: {st.session_state.get('edit_image_name','Selected Image')}")
 
     # Prompt and number of images
-    prompt = st.text_area("Enter prompt (for generation or editing)", key="main_prompt", height=140, placeholder="Enter prompt")
-    num_images = st.slider("Number of images to generate (when generating)", min_value=1, max_value=4, value=1, key="num_images_slider")
+    prompt = st.text_area("Enter prompt ", key="main_prompt", height=140, placeholder="Enter prompt")
+    num_images = 1
 
     # Run button (generation happens here and results are appended to session_state)
     if st.button("Run"):
