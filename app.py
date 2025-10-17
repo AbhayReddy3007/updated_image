@@ -18,7 +18,7 @@ except Exception:
     VERTEX_AVAILABLE = False
 
 # ---------------- Page config ----------------
-st.set_page_config(page_title="AI Image Generator + Editor (with Department)", layout="wide")
+st.set_page_config(page_title="AI Image Generator + Editor", layout="wide")
 st.title("AI Image Generator + Editor (with Department)")
 
 # ---------------- Safe session initialization ----------------
@@ -325,18 +325,16 @@ Instructions:
 left_col, right_col = st.columns([3, 1])
 
 with left_col:
-    st.subheader("Create or Edit — single flow")
-    st.markdown("**How it works:** If you upload an image (or load one from history into the editor), the prompt edits that image (Nano Banana). If you do not upload an image, the prompt generates new images (Imagen).")
-
+   
     # Department selector (re-added)
-    dept = st.selectbox("🏢 Department (controls prompt refinement)", list(PROMPT_TEMPLATES.keys()), index=0)
+    dept = st.selectbox("🏢 Department", list(PROMPT_TEMPLATES.keys()), index=0)
 
     # Style
-    style = st.selectbox("🎨 Style (optional)", list(STYLE_DESCRIPTIONS.keys()), index=0)
+    style = st.selectbox("🎨 Style ", list(STYLE_DESCRIPTIONS.keys()), index=0)
     style_desc = "" if style == "None" else STYLE_DESCRIPTIONS.get(style, "")
 
     # Upload an image (optional)
-    uploaded_file = st.file_uploader("Upload an image to edit (optional) — if present the prompt will edit this image", type=["png","jpg","jpeg","webp"])
+    uploaded_file = st.file_uploader(, type=["png","jpg","jpeg","webp"])
     if uploaded_file:
         raw = uploaded_file.read()
         pil = Image.open(BytesIO(raw)).convert("RGB")
@@ -351,7 +349,7 @@ with left_col:
             show_image_safe(st.session_state["edit_image_bytes"], caption=f"Editor loaded: {st.session_state.get('edit_image_name','Selected Image')}")
 
     # Prompt and number of images
-    prompt = st.text_area("Enter prompt (for generation or editing)", key="main_prompt", height=140, placeholder="If you uploaded an image this will edit that image; otherwise it will generate new images.")
+    prompt = st.text_area("Enter prompt (for generation or editing)", key="main_prompt", height=140, placeholder="Enter prompt")
     num_images = st.slider("Number of images to generate (when generating)", min_value=1, max_value=4, value=1, key="num_images_slider")
 
     # Run button (generation happens here and results are appended to session_state)
@@ -431,16 +429,12 @@ with left_col:
                 )
             with col_edit:
                 # this Edit button now reliably works because it's rendered on every run
-                if st.button("✏️ Edit this image (load into editor)", key=f"edit_gen_{key_hash}"):
+                if st.button("✏️ Edit this image", key=f"edit_gen_{key_hash}"):
                     st.session_state["edit_image_bytes"] = b
                     st.session_state["edit_image_name"] = os.path.basename(fname)
                     # rerun so the left editor area updates to show the loaded image
                     st.experimental_rerun()
 
-    # Clear editor button (switch to generation)
-    if st.button("Clear editor (switch to generation)"):
-        st.session_state["edit_image_bytes"] = None
-        st.session_state["edit_image_name"] = ""
 
 # ---------------- Right column: history + inline editing + re-edit ----------------
 with right_col:
