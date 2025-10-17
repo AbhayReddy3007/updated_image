@@ -1,7 +1,8 @@
-# streamlit_image_editor_switchable.py
+# streamlit_image_editor_inline_history.py
 import os
 import datetime
 import uuid
+import hashlib
 from io import BytesIO
 import streamlit as st
 from PIL import Image
@@ -17,14 +18,13 @@ except Exception:
     VERTEX_AVAILABLE = False
 
 # ---------------- STREAMLIT CONFIG ----------------
-st.set_page_config(page_title="AI Image Generator + Editor", layout="wide")
-st.title("AI Image Generator + Editor")
+st.set_page_config(page_title="AI Image Generator + Editor (Inline History Edit)", layout="wide")
+st.title("AI Image Generator + Editor (Inline History Edit)")
 
 # ---------------- SAFE SESSION INIT ----------------
 def init_session_state():
-    """Initialize session state safely. Call this after set_page_config/title."""
     try:
-        _ = st.session_state  # will raise RuntimeError if session isn't ready
+        _ = st.session_state
     except RuntimeError:
         return False
 
@@ -48,7 +48,6 @@ def init_vertex(project_id, credentials_info, location="us-central1"):
             return True
     except Exception:
         pass
-
     try:
         credentials = service_account.Credentials.from_service_account_info(dict(credentials_info))
         vertexai.init(project=project_id, location=location, credentials=credentials)
@@ -147,7 +146,6 @@ def run_edit_flow(edit_prompt, base_bytes):
         return None
 
     input_image = Part.from_data(mime_type="image/png", data=base_bytes)
-
     edit_instruction = f"""
 You are a professional AI image editor.
 
@@ -157,7 +155,6 @@ Instructions:
 - Return the final edited image inline (PNG).
 - Do not include any extra text or captions unless mentioned.
 """
-
     try:
         response = nano.generate_content([edit_instruction, input_image])
         for candidate in getattr(response, "candidates", []):
@@ -173,12 +170,11 @@ Instructions:
         st.error(f"❌ Error while editing: {e}")
         return None
 
-# ---------------- TRANSFER TO EDIT VIEW ----------------
+# ---------------- TRANSFER TO EDIT VIEW (kept for compatibility) ----------------
 def select_image_for_edit(img_bytes, filename):
     st.session_state["edit_image_bytes"] = img_bytes
     st.session_state["edit_image_name"] = filename
     st.session_state["active_tab"] = "edit"
-    # Force a rerun so the UI shows Edit view
     st.experimental_rerun()
 
 # ---------------- PROMPT TEMPLATES & STYLE (trimmed) ----------------
@@ -219,7 +215,6 @@ radio_index = 0 if active_tab == "generate" else 1
 with col_left:
     page_choice = st.radio("Choose view", ("Generate Images", "Edit Images"),
                            index=radio_index, key="main_page_radio")
-    # sync session_state when user manually changes radio
     if page_choice == "Generate Images":
         st.session_state["active_tab"] = "generate"
     else:
@@ -306,7 +301,6 @@ with col_left:
         uploaded_file = st.file_uploader("📤 Upload an image", type=["png", "jpg", "jpeg", "webp"])
         base_image = None
 
-        # Priority: session_state edit image (sent from history) -> uploaded file
         if st.session_state.get("edit_image_bytes"):
             base_image = st.session_state.get("edit_image_bytes")
             show_image_safe(base_image, caption=f"Editing: {st.session_state.get('edit_image_name','Selected Image')}")
@@ -351,23 +345,74 @@ with col_left:
                     else:
                         st.error("❌ No edited image returned by Nano Banana.")
 
-# ---------------- HISTORY (right column) ----------------
+# ---------------- HISTORY (right column) with INLINE EDITING ----------------
 with col_right:
     st.subheader("📂 History")
 
     if st.session_state.generated_images:
         st.markdown("### Generated Images")
+        # We take last 20 most recent entries
         for i, img in enumerate(reversed(st.session_state.generated_images[-20:])):
-            name = os.path.basename(img.get('filename', 'Unnamed Image'))
+            filename = img.get('filename', f'generated_{i}.png')
+            name = os.path.basename(filename)
+            content = img.get("content")
+            # stable short id for keys
+            id_hash = hashlib.md5(name.encode()).hexdigest()[:10]
+
             with st.expander(f"{i+1}. {name}"):
-                content = img.get("content")
+                # show thumbnail
                 show_image_safe(content, caption=name)
-                dl_key = f"gen_dl_hist_{i}_{uuid.uuid4().hex}"
+
+                # Download button
+                dl_key = f"gen_dl_hist_{id_hash}"
                 st.download_button("⬇️ Download Again", data=content, file_name=name, mime="image/png", key=dl_key)
 
-                # Offer quick-send-to-edit
-                if st.button("✏️ Edit this image", key=f"send_edit_{i}_{uuid.uuid4().hex}"):
+                # Quick-send-to-edit (previous behavior)
+                if st.button("✏️ Open in Edit View", key=f"send_edit_{id_hash}"):
                     select_image_for_edit(content, name)
+
+                st.markdown("---")
+                st.write("Edit inline (type instructions and press **Edit Inline**):")
+
+                # Inline prompt text area (stable key based on filename hash)
+                inline_prompt_key = f"inline_prompt_{id_hash}"
+                # Preserve any existing text_area value across reruns by using session_state key
+                if inline_prompt_key not in st.session_state:
+                    st.session_state[inline_prompt_key] = ""
+
+                # show text area
+                st.text_area("Edit instructions", value=st.session_state[inline_prompt_key], key=inline_prompt_key, height=100)
+
+                # Edit inline button
+                if st.button("Edit Inline", key=f"inline_edit_btn_{id_hash}"):
+                    prompt_text = st.session_state.get(inline_prompt_key, "").strip()
+                    if not prompt_text:
+                        st.warning("Please enter edit instructions before clicking Edit Inline.")
+                    else:
+                        with st.spinner("Editing image with Nano Banana..."):
+                            edited_bytes = run_edit_flow(prompt_text, content)
+                            if edited_bytes:
+                                # save edited image to outputs
+                                out_name = f"outputs/edited/edited_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{id_hash}.png"
+                                with open(out_name, "wb") as f:
+                                    f.write(edited_bytes)
+
+                                st.success("Edited image created below.")
+                                show_image_safe(edited_bytes, caption=f"Edited: {name}")
+
+                                # unique download key
+                                dl_edit_key = f"inline_edit_dl_{id_hash}_{uuid.uuid4().hex}"
+                                st.download_button("⬇️ Download Edited", data=edited_bytes, file_name=os.path.basename(out_name), mime="image/png", key=dl_edit_key)
+
+                                # Save into session_state.edited_images for the Edited Images history
+                                st.session_state.edited_images.append({
+                                    "original": content,
+                                    "edited": edited_bytes,
+                                    "prompt": prompt_text,
+                                    "filename": out_name,
+                                })
+                            else:
+                                st.error("Editing returned no image. See warnings above.")
 
     if st.session_state.edited_images:
         st.markdown("### Edited Images")
@@ -384,6 +429,5 @@ with col_right:
                     dl_key = f"edit_dl_hist_{i}_{uuid.uuid4().hex}"
                     st.download_button("⬇️ Download Edited", data=edited_bytes, file_name=os.path.basename(entry.get("filename", f"edited_{i}.png")), mime="image/png", key=dl_key)
 
-# -------------- Usage tip --------------
 st.markdown("---")
-st.caption("Tip: Use the 'Edit this image' button in the history panel. The app will rerun and the left view selector will switch to Edit with that image preloaded.")
+st.caption("Tip: Use 'Edit Inline' to provide edit instructions for any Generated image inside the History panel. Edited images are saved to outputs/edited.")
