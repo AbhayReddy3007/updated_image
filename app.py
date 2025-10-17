@@ -18,8 +18,8 @@ except Exception:
     VERTEX_AVAILABLE = False
 
 # ---------------- Page config ----------------
-st.set_page_config(page_title="AI Image Generator + Editor (with Department)", layout="wide")
-st.title("AI Image Generator + Editor (with Department)")
+st.set_page_config(page_title="AI Image Generator + Editor ", layout="wide")
+st.title("AI Image Generator + Editor ")
 
 # ---------------- Safe session initialization ----------------
 def safe_init_session():
@@ -329,11 +329,9 @@ Instructions:
 left_col, right_col = st.columns([3, 1])
 
 with left_col:
-    st.subheader("Create or Edit — single flow")
-    st.markdown("**How it works:** If you upload an image (or load one from history into the editor), the prompt edits that image (Nano Banana). If you do not upload an image, the prompt generates new images (Imagen).")
-
+   
     # Department selector (re-added)
-    dept = st.selectbox("🏢 Department (controls prompt refinement)", list(PROMPT_TEMPLATES.keys()), index=0)
+    dept = st.selectbox("🏢 Department ", list(PROMPT_TEMPLATES.keys()), index=0)
 
     # Style
     style = st.selectbox("🎨 Style (optional)", list(STYLE_DESCRIPTIONS.keys()), index=0)
