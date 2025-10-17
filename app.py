@@ -1,3 +1,4 @@
+# streamlit_image_editor_switchable.py
 import os
 import datetime
 import uuid
@@ -21,13 +22,10 @@ st.title("AI Image Generator + Editor")
 
 # ---------------- SAFE SESSION INIT ----------------
 def init_session_state():
-    """Initialize session state safely. Call this after set_page_config/title.
-    Uses setdefault to avoid overwriting on reruns. Returns True when initialized.
-    """
+    """Initialize session state safely. Call this after set_page_config/title."""
     try:
         _ = st.session_state  # will raise RuntimeError if session isn't ready
     except RuntimeError:
-        # Session not ready (rare if called immediately after title), return False
         return False
 
     st.session_state.setdefault("generated_images", [])
@@ -37,16 +35,12 @@ def init_session_state():
     st.session_state.setdefault("active_tab", "generate")
     return True
 
-# Initialize session state now that Streamlit has started
 init_session_state()
 
 # ---------------- LAZY MODEL GETTERS ----------------
-# These functions defer VertexAI/model initialization until used, which prevents
-# SDK/network calls from running during import time and avoids some session races.
 MODEL_CACHE = {"imagen": None, "nano": None, "text": None}
 
 def init_vertex(project_id, credentials_info, location="us-central1"):
-    """Initialize Vertex AI SDK once. Returns True if initialized or already initialized."""
     if not VERTEX_AVAILABLE:
         return False
     try:
@@ -64,7 +58,6 @@ def init_vertex(project_id, credentials_info, location="us-central1"):
         st.error(f"VertexAI init failed: {e}")
         return False
 
-
 def get_imagen_model():
     if MODEL_CACHE["imagen"]:
         return MODEL_CACHE["imagen"]
@@ -77,7 +70,6 @@ def get_imagen_model():
         st.error(f"Failed to load Imagen model: {e}")
         return None
 
-
 def get_nano_banana_model():
     if MODEL_CACHE["nano"]:
         return MODEL_CACHE["nano"]
@@ -89,7 +81,6 @@ def get_nano_banana_model():
     except Exception as e:
         st.error(f"Failed to load Nano Banana (editor) model: {e}")
         return None
-
 
 def get_text_model():
     if MODEL_CACHE["text"]:
@@ -105,7 +96,6 @@ def get_text_model():
 
 # ---------------- IMAGE DISPLAY WRAPPER ----------------
 def show_image_safe(image_source, caption="Image"):
-    """Accepts either raw bytes or a PIL.Image and shows it robustly across Streamlit versions."""
     try:
         if isinstance(image_source, (bytes, bytearray)):
             st.image(image_source, caption=caption, use_container_width=True)
@@ -114,7 +104,6 @@ def show_image_safe(image_source, caption="Image"):
         else:
             st.image(Image.open(BytesIO(image_source)), caption=caption, use_container_width=True)
     except TypeError:
-        # Older Streamlit versions
         try:
             if isinstance(image_source, (bytes, bytearray)):
                 st.image(image_source, caption=caption, use_column_width=True)
@@ -138,7 +127,6 @@ def safe_get_enhanced_text(resp):
             pass
     return str(resp)
 
-
 def get_image_bytes_from_genobj(gen_obj):
     if isinstance(gen_obj, (bytes, bytearray)):
         return bytes(gen_obj)
@@ -153,7 +141,6 @@ def get_image_bytes_from_genobj(gen_obj):
 
 # ---------------- EDIT FLOW ----------------
 def run_edit_flow(edit_prompt, base_bytes):
-    """Edit image with Gemini editor (Nano Banana). Returns raw PNG bytes or None."""
     nano = get_nano_banana_model()
     if nano is None:
         st.error("Editor model not available. Make sure VertexAI SDK is installed and configured in Streamlit secrets.")
@@ -173,34 +160,28 @@ Instructions:
 
     try:
         response = nano.generate_content([edit_instruction, input_image])
-
         for candidate in getattr(response, "candidates", []):
             for part in getattr(candidate.content, "parts", []):
                 if hasattr(part, "inline_data") and getattr(part.inline_data, "data", None):
-                    return part.inline_data.data  # raw PNG bytes
-
+                    return part.inline_data.data
         if hasattr(response, "text") and response.text:
             st.warning(f"⚠️ Gemini returned text instead of an image:\n\n{response.text}")
         else:
             st.error("⚠️ No inline image returned by Nano Banana.")
         return None
-
     except Exception as e:
         st.error(f"❌ Error while editing: {e}")
         return None
 
-# ---------------- TRANSFER TO EDIT TAB ----------------
+# ---------------- TRANSFER TO EDIT VIEW ----------------
 def select_image_for_edit(img_bytes, filename):
-    """Place an image into session_state for the Edit tab and rerun the app.
-    Avoids toast to prevent SessionInfo race conditions."""
     st.session_state["edit_image_bytes"] = img_bytes
     st.session_state["edit_image_name"] = filename
     st.session_state["active_tab"] = "edit"
-
-    # Rerun so the Edit tab picks up the provided image immediately
+    # Force a rerun so the UI shows Edit view
     st.experimental_rerun()
 
-# ---------------- PROMPT TEMPLATES & STYLE (keep trimmed for clarity) ----------------
+# ---------------- PROMPT TEMPLATES & STYLE (trimmed) ----------------
 PROMPT_TEMPLATES = {
     "None": """
 Dont make any changes in the user's prompt.Follow it as it is
@@ -216,10 +197,8 @@ User’s raw prompt:
 "{USER_PROMPT}"
 
 Refined general image prompt:
-""",
-    # (Add other templates as needed; trimmed here for brevity.)
+"""
 }
-
 STYLE_DESCRIPTIONS = {
     "None": "No special styling — keep the image natural, faithful to the user’s idea.",
     "Smart": "A clean, balanced, and polished look.",
@@ -230,16 +209,25 @@ STYLE_DESCRIPTIONS = {
 os.makedirs("outputs/generated", exist_ok=True)
 os.makedirs("outputs/edited", exist_ok=True)
 
-# ---------------- UI LAYOUT ----------------
+# ---------------- UI LAYOUT (radio-controlled pages) ----------------
 col_left, col_right = st.columns([3, 1])
+
+# map session_state active to radio index
+active_tab = st.session_state.get("active_tab", "generate")
+radio_index = 0 if active_tab == "generate" else 1
+
 with col_left:
-    tab_generate, tab_edit = st.tabs([" Generate Images", "Edit Images"]) 
+    page_choice = st.radio("Choose view", ("Generate Images", "Edit Images"),
+                           index=radio_index, key="main_page_radio")
+    # sync session_state when user manually changes radio
+    if page_choice == "Generate Images":
+        st.session_state["active_tab"] = "generate"
+    else:
+        st.session_state["active_tab"] = "edit"
 
-    # ---------------- GENERATE TAB ----------------
-    with tab_generate:
+    # ---------------- GENERATE VIEW ----------------
+    if page_choice == "Generate Images":
         st.header(" Generate Images ")
-
-        # Lazy-guard Vertex init using secrets only when trying to generate
         dept = st.selectbox("🏢 Department", list(PROMPT_TEMPLATES.keys()), index=0)
         style = st.selectbox("🎨 Style", list(STYLE_DESCRIPTIONS.keys()), index=0)
         user_prompt = st.text_area("Enter your prompt", height=120)
@@ -249,11 +237,9 @@ with col_left:
             if not user_prompt.strip():
                 st.warning("Please enter a prompt.")
             else:
-                # Initialize Vertex if secrets are present
                 if not VERTEX_AVAILABLE:
                     st.error("VertexAI SDK not available in this environment. Install and configure it to use model features.")
                 else:
-                    # Try to init vertex using secrets (fail gracefully)
                     creds_info = st.secrets.get("gcp_service_account")
                     if not creds_info or not creds_info.get("project_id"):
                         st.error("Missing GCP credentials in Streamlit secrets. Add 'gcp_service_account' JSON.")
@@ -266,7 +252,6 @@ with col_left:
                                 refinement_prompt = PROMPT_TEMPLATES.get(dept, PROMPT_TEMPLATES["General"]).replace("{USER_PROMPT}", user_prompt)
                                 if style != "None":
                                     refinement_prompt += f"\n\nApply style: {STYLE_DESCRIPTIONS.get(style, '')}"
-
                                 try:
                                     if text_model:
                                         text_resp = text_model.generate_content(refinement_prompt)
@@ -307,21 +292,18 @@ with col_left:
                                                 f.write(img_bytes)
 
                                             st.session_state.generated_images.append({"filename": filename, "content": img_bytes})
-
                                             show_image_safe(img_bytes, caption=os.path.basename(filename))
 
-                                            # Unique keys using uuid to avoid DuplicateWidgetID
                                             btn_key = f"dl_gen_{i}_{uuid.uuid4().hex}"
                                             st.download_button("⬇️ Download", data=img_bytes, file_name=os.path.basename(filename), mime="image/png", key=btn_key)
-
                                         except Exception as e:
                                             st.error(f"⚠️ Failed to display image {i}: {e}")
 
-    # ---------------- EDIT TAB ----------------
-    with tab_edit:
+    # ---------------- EDIT VIEW ----------------
+    else:
         st.header("Edit Images")
 
-        uploaded_file = st.file_uploader("📤 Upload an image", type=["png", "jpg", "jpeg", "webp"]) 
+        uploaded_file = st.file_uploader("📤 Upload an image", type=["png", "jpg", "jpeg", "webp"])
         base_image = None
 
         # Priority: session_state edit image (sent from history) -> uploaded file
@@ -357,15 +339,8 @@ with col_left:
                                 f.write(out_bytes)
 
                             show_image_safe(out_bytes, caption=f"Edited Version {i+1}")
-
                             dl_key = f"edit_dl_{i}_{uuid.uuid4().hex}"
-                            st.download_button(
-                                f"⬇️ Download Edited {i+1}",
-                                data=out_bytes,
-                                file_name=os.path.basename(filename),
-                                mime="image/png",
-                                key=dl_key
-                            )
+                            st.download_button(f"⬇️ Download Edited {i+1}", data=out_bytes, file_name=os.path.basename(filename), mime="image/png", key=dl_key)
 
                             st.session_state.edited_images.append({
                                 "original": base_image,
@@ -382,20 +357,13 @@ with col_right:
 
     if st.session_state.generated_images:
         st.markdown("### Generated Images")
-        # Show most recent first
         for i, img in enumerate(reversed(st.session_state.generated_images[-20:])):
             name = os.path.basename(img.get('filename', 'Unnamed Image'))
             with st.expander(f"{i+1}. {name}"):
                 content = img.get("content")
                 show_image_safe(content, caption=name)
                 dl_key = f"gen_dl_hist_{i}_{uuid.uuid4().hex}"
-                st.download_button(
-                    "⬇️ Download Again",
-                    data=content,
-                    file_name=name,
-                    mime="image/png",
-                    key=dl_key
-                )
+                st.download_button("⬇️ Download Again", data=content, file_name=name, mime="image/png", key=dl_key)
 
                 # Offer quick-send-to-edit
                 if st.button("✏️ Edit this image", key=f"send_edit_{i}_{uuid.uuid4().hex}"):
@@ -414,14 +382,8 @@ with col_right:
                     edited_bytes = entry.get("edited")
                     show_image_safe(edited_bytes, caption="Edited")
                     dl_key = f"edit_dl_hist_{i}_{uuid.uuid4().hex}"
-                    st.download_button(
-                        "⬇️ Download Edited",
-                        data=edited_bytes,
-                        file_name=os.path.basename(entry.get("filename", f"edited_{i}.png")),
-                        mime="image/png",
-                        key=dl_key
-                    )
+                    st.download_button("⬇️ Download Edited", data=edited_bytes, file_name=os.path.basename(entry.get("filename", f"edited_{i}.png")), mime="image/png", key=dl_key)
 
 # -------------- Usage tip --------------
 st.markdown("---")
-st.caption("Tip: If you send an image to the editor from the History section, the app will rerun and the Edit tab will show the image. If you hit DuplicateWidgetID errors, restart the app or let me know and I'll add deterministic keys.")
+st.caption("Tip: Use the 'Edit this image' button in the history panel. The app will rerun and the left view selector will switch to Edit with that image preloaded.")
