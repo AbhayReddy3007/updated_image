@@ -334,7 +334,7 @@ with left_col:
     style_desc = "" if style == "None" else STYLE_DESCRIPTIONS.get(style, "")
 
     # Upload an image (optional)
-    uploaded_file = st.file_uploader(, type=["png","jpg","jpeg","webp"])
+    uploaded_file = st.file_uploader( type=["png","jpg","jpeg","webp"])
     if uploaded_file:
         raw = uploaded_file.read()
         pil = Image.open(BytesIO(raw)).convert("RGB")
