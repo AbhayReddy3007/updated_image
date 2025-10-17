@@ -407,73 +407,7 @@ with left_col:
 
                             # store generated image with metadata
                             entry = {"filename": fname, "content": b, "key": key_hash}
-                            st.session_state.generated_images.append(entry)
-
-                            # display image and iterative-feedback UI
-                            show_image_safe(b, caption=os.path.basename(fname))
-
-                            # feedback text area (iterative editing)
-                            fb_key = f"feedback_{key_hash}"
-                            if fb_key not in st.session_state:
-                                st.session_state[fb_key] = ""
-
-                            finalized_key = f"finalized_{key_hash}"
-                            if finalized_key not in st.session_state:
-                                st.session_state[finalized_key] = False
-
-                            col_a, col_b, col_c = st.columns([3, 2, 1])
-                            with col_a:
-                                st.text_area("Give feedback to edit this image (iterations allowed):", key=fb_key, value=st.session_state[fb_key], height=80)
-                            with col_b:
-                                if st.button("Edit with feedback", key=f"edit_fb_{key_hash}"):
-                                    feedback_text = st.session_state.get(fb_key, "").strip()
-                                    if not feedback_text:
-                                        st.warning("Enter feedback for editing.")
-                                    else:
-                                        with st.spinner("Applying feedback edits..."):
-                                            new_bytes = run_edit_flow(feedback_text, st.session_state.generated_images[-1]["content"]) if st.session_state.generated_images and st.session_state.generated_images[-1]["key"] == key_hash else run_edit_flow(feedback_text, b)
-                                            if new_bytes:
-                                                ts2 = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                                                outfn = f"outputs/edited/edited_{ts2}_{key_hash}.png"
-                                                os.makedirs(os.path.dirname(outfn), exist_ok=True)
-                                                with open(outfn, "wb") as f:
-                                                    f.write(new_bytes)
-                                                st.success("Edited image created from feedback.")
-                                                # replace the stored content for this image so further edits use latest
-                                                # find and update the matching generated image in session_state
-                                                for idx, gi in enumerate(st.session_state.generated_images[::-1]):
-                                                    # iterate reversed to find most recent matching key
-                                                    if gi.get("key") == key_hash:
-                                                        real_idx = len(st.session_state.generated_images) - 1 - idx
-                                                        st.session_state.generated_images[real_idx]["content"] = new_bytes
-                                                        st.session_state.generated_images[real_idx]["filename"] = outfn
-                                                        break
-                                                # also load into editor slot for convenience
-                                                st.session_state["edit_image_bytes"] = new_bytes
-                                                st.session_state["edit_image_name"] = os.path.basename(outfn)
-                                                # show the new edited image immediately
-                                                show_image_safe(new_bytes, caption=f"Edited ({ts2})")
-                                            else:
-                                                st.error("Feedback edit failed or returned no image.")
-                                if st.button("Finalize & Prepare Download", key=f"finalize_{key_hash}"):
-                                    st.session_state[finalized_key] = True
-                                    st.success("Image finalized. Use the download button that just appeared to save the final image.")
-                            with col_c:
-                                # only show download when finalized
-                                if st.session_state.get(finalized_key):
-                                    # find the stored content for this key
-                                    found_bytes = None
-                                    for gi in st.session_state.generated_images[::-1]:
-                                        if gi.get("key") == key_hash:
-                                            found_bytes = gi.get("content")
-                                            break
-                                    if found_bytes:
-                                        st.download_button("⬇️ Download Final Image", data=found_bytes, file_name=os.path.basename(fname), mime="image/png", key=f"dl_final_{key_hash}")
-                                    else:
-                                        st.error("No image data available for download.")
-
-                    else:
-                        st.error("Generation failed or returned no images.")
+                            st.session_state.generated_images.append(entry)\n                            # display image with download + edit beside it\n                            show_image_safe(b, caption=os.path.basename(fname))\n\n                            # place Download and Edit buttons side-by-side\n                            key_hash = entry.get("key")\n                            col_dl, col_edit = st.columns([1,1])\n                            with col_dl:\n                                st.download_button("⬇️ Download", data=b, file_name=os.path.basename(fname), mime="image/png", key=f"dl_gen_{key_hash}")\n                            with col_edit:\n                                if st.button("✏️ Edit this image (load into editor)", key=f"edit_gen_{key_hash}"):\n                                    st.session_state["edit_image_bytes"] = b\n                                    st.session_state["edit_image_name"] = os.path.basename(fname)\n                                    st.experimental_rerun()\n\n                    else:\n                        st.error("Generation failed or returned no images.")
 
     # Clear editor button (switch to generation)
     if st.button("Clear editor (switch to generation)"):
