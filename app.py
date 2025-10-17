@@ -1,4 +1,4 @@
-# streamlit_image_editor_inline_history.py
+# streamlit_image_editor_reeditable.py
 import os
 import datetime
 import uuid
@@ -18,8 +18,8 @@ except Exception:
     VERTEX_AVAILABLE = False
 
 # ---------------- STREAMLIT CONFIG ----------------
-st.set_page_config(page_title="AI Image Generator + Editor (Inline History Edit)", layout="wide")
-st.title("AI Image Generator + Editor (Inline History Edit)")
+st.set_page_config(page_title="AI Image Generator + Editor (Re-editable)", layout="wide")
+st.title("AI Image Generator + Editor (Re-editable)")
 
 # ---------------- SAFE SESSION INIT ----------------
 def init_session_state():
@@ -170,7 +170,7 @@ Instructions:
         st.error(f"❌ Error while editing: {e}")
         return None
 
-# ---------------- TRANSFER TO EDIT VIEW (kept for compatibility) ----------------
+# ---------------- TRANSFER TO EDIT VIEW ----------------
 def select_image_for_edit(img_bytes, filename):
     st.session_state["edit_image_bytes"] = img_bytes
     st.session_state["edit_image_name"] = filename
@@ -345,45 +345,35 @@ with col_left:
                     else:
                         st.error("❌ No edited image returned by Nano Banana.")
 
-# ---------------- HISTORY (right column) with INLINE EDITING ----------------
+# ---------------- HISTORY (right column) with INLINE EDITING & RE-EDIT ----------------
 with col_right:
     st.subheader("📂 History")
 
+    # Generated images with inline edit
     if st.session_state.generated_images:
         st.markdown("### Generated Images")
-        # We take last 20 most recent entries
         for i, img in enumerate(reversed(st.session_state.generated_images[-20:])):
             filename = img.get('filename', f'generated_{i}.png')
             name = os.path.basename(filename)
             content = img.get("content")
-            # stable short id for keys
             id_hash = hashlib.md5(name.encode()).hexdigest()[:10]
 
             with st.expander(f"{i+1}. {name}"):
-                # show thumbnail
                 show_image_safe(content, caption=name)
-
-                # Download button
                 dl_key = f"gen_dl_hist_{id_hash}"
                 st.download_button("⬇️ Download Again", data=content, file_name=name, mime="image/png", key=dl_key)
 
-                # Quick-send-to-edit (previous behavior)
                 if st.button("✏️ Open in Edit View", key=f"send_edit_{id_hash}"):
                     select_image_for_edit(content, name)
 
                 st.markdown("---")
                 st.write("Edit inline (type instructions and press **Edit Inline**):")
 
-                # Inline prompt text area (stable key based on filename hash)
                 inline_prompt_key = f"inline_prompt_{id_hash}"
-                # Preserve any existing text_area value across reruns by using session_state key
                 if inline_prompt_key not in st.session_state:
                     st.session_state[inline_prompt_key] = ""
-
-                # show text area
                 st.text_area("Edit instructions", value=st.session_state[inline_prompt_key], key=inline_prompt_key, height=100)
 
-                # Edit inline button
                 if st.button("Edit Inline", key=f"inline_edit_btn_{id_hash}"):
                     prompt_text = st.session_state.get(inline_prompt_key, "").strip()
                     if not prompt_text:
@@ -392,19 +382,16 @@ with col_right:
                         with st.spinner("Editing image with Nano Banana..."):
                             edited_bytes = run_edit_flow(prompt_text, content)
                             if edited_bytes:
-                                # save edited image to outputs
                                 out_name = f"outputs/edited/edited_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{id_hash}.png"
                                 with open(out_name, "wb") as f:
                                     f.write(edited_bytes)
 
                                 st.success("Edited image created below.")
                                 show_image_safe(edited_bytes, caption=f"Edited: {name}")
-
-                                # unique download key
                                 dl_edit_key = f"inline_edit_dl_{id_hash}_{uuid.uuid4().hex}"
                                 st.download_button("⬇️ Download Edited", data=edited_bytes, file_name=os.path.basename(out_name), mime="image/png", key=dl_edit_key)
 
-                                # Save into session_state.edited_images for the Edited Images history
+                                # append to edited_images for re-editing later
                                 st.session_state.edited_images.append({
                                     "original": content,
                                     "edited": edited_bytes,
@@ -414,27 +401,59 @@ with col_right:
                             else:
                                 st.error("Editing returned no image. See warnings above.")
 
+    # Edited images with re-edit (chain edits)
     if st.session_state.edited_images:
-        st.markdown("### Edited Images")
-        for i, entry in enumerate(reversed(st.session_state.edited_images[-20:])):
+        st.markdown("### Edited Images (You can re-edit these)")
+        for i, entry in enumerate(reversed(st.session_state.edited_images[-40:])):
+            fn = entry.get("filename", f"edited_{i}.png")
+            name = os.path.basename(fn)
+            edited_bytes = entry.get("edited")
             prompt_preview = entry.get("prompt", "")[:60]
+            id_hash = hashlib.md5(name.encode()).hexdigest()[:10]
+
             with st.expander(f"Edited {i+1}: {prompt_preview}"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    orig_bytes = entry.get("original")
-                    show_image_safe(orig_bytes, caption="Original")
+                    show_image_safe(entry.get("original"), caption="Original (before this edit)")
                 with col2:
-                    edited_bytes = entry.get("edited")
-                    show_image_safe(edited_bytes, caption="Edited")
-                    dl_key = f"edit_dl_hist_{i}_{uuid.uuid4().hex}"
-                    st.download_button("⬇️ Download Edited", data=edited_bytes, file_name=os.path.basename(entry.get("filename", f"edited_{i}.png")), mime="image/png", key=dl_key)
+                    show_image_safe(edited_bytes, caption="Edited result (click to expand)")
+
+                st.markdown("---")
+                st.write("Re-edit this edited image (type instructions and press **Re-Edit Inline**):")
+
+                # stable key for re-edit input
+                reedit_prompt_key = f"reedit_prompt_{id_hash}"
+                if reedit_prompt_key not in st.session_state:
+                    st.session_state[reedit_prompt_key] = ""
+                st.text_area("Re-edit instructions", value=st.session_state[reedit_prompt_key], key=reedit_prompt_key, height=100)
+
+                # Re-edit button that runs Nano Banana on *edited_bytes*
+                if st.button("Re-Edit Inline", key=f"reedit_btn_{id_hash}"):
+                    reedit_text = st.session_state.get(reedit_prompt_key, "").strip()
+                    if not reedit_text:
+                        st.warning("Please enter re-edit instructions before clicking Re-Edit Inline.")
+                    else:
+                        with st.spinner("Re-editing image with Nano Banana..."):
+                            new_edited = run_edit_flow(reedit_text, edited_bytes)
+                            if new_edited:
+                                out_name = f"outputs/edited/reedited_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{id_hash}.png"
+                                with open(out_name, "wb") as f:
+                                    f.write(new_edited)
+
+                                st.success("Re-edited image created below.")
+                                show_image_safe(new_edited, caption=f"Re-Edited: {name}")
+                                dl_reedit_key = f"reedit_dl_{id_hash}_{uuid.uuid4().hex}"
+                                st.download_button("⬇️ Download Re-Edited", data=new_edited, file_name=os.path.basename(out_name), mime="image/png", key=dl_reedit_key)
+
+                                # append new re-edit entry so it can be re-edited again
+                                st.session_state.edited_images.append({
+                                    "original": edited_bytes,   # previous edited result becomes original for next chain
+                                    "edited": new_edited,
+                                    "prompt": reedit_text,
+                                    "filename": out_name,
+                                })
+                            else:
+                                st.error("Re-edit returned no image. See warnings above.")
 
 st.markdown("---")
-st.caption("Tip: Use 'Edit Inline' to provide edit instructions for any Generated image inside the History panel. Edited images are saved to outputs/edited.")
-
-
-
-
-
-
-#ttttttttttttttttttttt
+st.caption("Tip: Use 'Re-Edit Inline' in the Edited Images panel to chain edits. Each new re-edit is saved to outputs/edited and appended to the history for further re-editing.")
