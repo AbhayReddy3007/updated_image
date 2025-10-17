@@ -1,4 +1,4 @@
-# app.py -- show enhanced prompt for generated images
+# app.py  -- fixed: persistent generated-image rendering so Edit button works after generation
 import os
 import re
 import uuid
@@ -18,8 +18,8 @@ except Exception:
     VERTEX_AVAILABLE = False
 
 # ---------------- Page config ----------------
-st.set_page_config(page_title="AI Image Generator + Editor ", layout="wide")
-st.title("AI Image Generator + Editor ")
+st.set_page_config(page_title="AI Image Generator + Editor (with Department)", layout="wide")
+st.title("AI Image Generator + Editor (with Department)")
 
 # ---------------- Safe session initialization ----------------
 def safe_init_session():
@@ -27,7 +27,7 @@ def safe_init_session():
         _ = st.session_state
     except RuntimeError:
         return False
-    st.session_state.setdefault("generated_images", [])   # list of {"filename","content","key","enhanced_prompt"}
+    st.session_state.setdefault("generated_images", [])   # list of {"filename","content","key"}
     st.session_state.setdefault("edited_images", [])      # list of {"original","edited","prompt","filename"}
     st.session_state.setdefault("edit_image_bytes", None) # currently loaded image bytes for editing
     st.session_state.setdefault("edit_image_name", "")
@@ -221,27 +221,27 @@ def get_text_model():
 
 # ---------------- Core flows ----------------
 def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
-    """
-    Generate images with Imagen.
-    Returns (list_of_bytes, enhanced_prompt_str)
-    """
+    """Generate images with Imagen. Refine prompt only when dept != 'None' and sanitize result."""
     if not VERTEX_AVAILABLE:
         st.error("VertexAI SDK not available in this environment.")
-        return [], prompt
-
-    # default enhanced is the raw prompt
-    enhanced_prompt = prompt
+        return []
 
     creds = st.secrets.get("gcp_service_account")
     if not creds or not creds.get("project_id"):
         st.error("Missing GCP credentials in Streamlit secrets: 'gcp_service_account'")
-        return [], prompt
+        return []
 
     if not init_vertex(creds["project_id"], creds):
         st.error("Failed to initialize VertexAI.")
-        return [], prompt
+        return []
 
-    # attempt to refine prompt if requested
+    imagen = get_imagen_model()
+    if imagen is None:
+        st.error("Imagen model unavailable.")
+        return []
+
+    # Only refine when department selected
+    enhanced_prompt = prompt
     if dept and dept != "None":
         text_model = get_text_model()
         if text_model:
@@ -256,20 +256,16 @@ def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
                 if cleaned:
                     enhanced_prompt = cleaned
             except Exception as e:
+                # fallback to original prompt
                 st.warning(f"Prompt refinement failed, using raw prompt. ({e})")
                 enhanced_prompt = prompt
 
-    imagen = get_imagen_model()
-    if imagen is None:
-        st.error("Imagen model unavailable.")
-        return [], enhanced_prompt
-
-    # call Imagen with the (possibly enhanced) prompt
+    # call Imagen
     try:
         resp = imagen.generate_images(prompt=enhanced_prompt, number_of_images=n_images)
     except Exception as e:
         st.error(f"Imagen generate_images failed: {e}")
-        return [], enhanced_prompt
+        return []
 
     out = []
     for i in range(min(n_images, len(resp.images))):
@@ -277,7 +273,7 @@ def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
         b = get_image_bytes_from_genobj(gen_obj)
         if b:
             out.append(b)
-    return out, enhanced_prompt
+    return out
 
 def run_edit_flow(edit_prompt, base_bytes):
     """Edit image bytes using Gemini Nano Banana. Returns edited bytes or None."""
@@ -329,9 +325,11 @@ Instructions:
 left_col, right_col = st.columns([3, 1])
 
 with left_col:
-   
+    st.subheader("Create or Edit — single flow")
+    st.markdown("**How it works:** If you upload an image (or load one from history into the editor), the prompt edits that image (Nano Banana). If you do not upload an image, the prompt generates new images (Imagen).")
+
     # Department selector (re-added)
-    dept = st.selectbox("🏢 Department ", list(PROMPT_TEMPLATES.keys()), index=0)
+    dept = st.selectbox("🏢 Department (controls prompt refinement)", list(PROMPT_TEMPLATES.keys()), index=0)
 
     # Style
     style = st.selectbox("🎨 Style (optional)", list(STYLE_DESCRIPTIONS.keys()), index=0)
@@ -388,11 +386,11 @@ with left_col:
                     else:
                         st.error("Editing failed or returned no image.")
             else:
-                # GENERATION FLOW (Imagen) - append images + enhanced prompt to session state
+                # GENERATION FLOW (Imagen) - append images to session state
                 with st.spinner("Generating images with Imagen..."):
-                    generated, enhanced = generate_images_from_prompt(prompt_text, dept=dept, style_desc=style_desc, n_images=num_images)
+                    generated = generate_images_from_prompt(prompt_text, dept=dept, style_desc=style_desc, n_images=num_images)
                     if generated:
-                        st.success(f"Generated {len(generated)} image(s). (enhanced prompt shown below)")
+                        st.success(f"Generated {len(generated)} image(s).")
                         for i, b in enumerate(generated):
                             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             fname = f"outputs/generated/gen_{ts}_{i}.png"
@@ -404,8 +402,8 @@ with left_col:
                             short = os.path.basename(fname) + str(i)
                             key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, short).hex[:8]
 
-                            # store generated image with metadata (including enhanced prompt)
-                            entry = {"filename": fname, "content": b, "key": key_hash, "enhanced_prompt": enhanced}
+                            # store generated image with metadata (persistent)
+                            entry = {"filename": fname, "content": b, "key": key_hash}
                             st.session_state.generated_images.append(entry)
                     else:
                         st.error("Generation failed or returned no images.")
@@ -420,13 +418,8 @@ with left_col:
             fname = entry.get("filename")
             b = entry.get("content")
             key_hash = entry.get("key") or uuid.uuid5(uuid.NAMESPACE_DNS, os.path.basename(fname)).hex[:8]
-            enhanced_prompt = entry.get("enhanced_prompt", "")
 
             show_image_safe(b, caption=os.path.basename(fname))
-            # show enhanced prompt in an expander so it doesn't clutter layout
-            with st.expander("Enhanced prompt (refined)"):
-                st.code(enhanced_prompt)
-
             col_dl, col_edit = st.columns([1, 1])
             with col_dl:
                 st.download_button(
@@ -460,15 +453,8 @@ with right_col:
             name = os.path.basename(entry.get("filename", f"gen_{idx}.png"))
             content = entry.get("content")
             key_hash = entry.get("key") or uuid.uuid5(uuid.NAMESPACE_DNS, name + str(idx)).hex[:8]
-            enhanced_prompt = entry.get("enhanced_prompt", "")
             with st.expander(name):
                 show_image_safe(content, caption=name)
-
-                # show enhanced prompt in history entry as well
-                if enhanced_prompt:
-                    with st.expander("Enhanced prompt (refined)"):
-                        st.code(enhanced_prompt)
-
                 st.download_button("⬇️ Download", data=content, file_name=name, mime="image/png", key=f"hist_dl_{key_hash}")
                 if st.button("✏️ Edit this image (load into editor)", key=f"hist_edit_{key_hash}"):
                     st.session_state["edit_image_bytes"] = content
