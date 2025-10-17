@@ -1,4 +1,4 @@
-# streamlit_image_single_flow_with_dept.py
+# streamlit_image_single_flow_with_dept_iterative_feedback.py
 import os
 import re
 import uuid
@@ -27,7 +27,7 @@ def safe_init_session():
         _ = st.session_state
     except RuntimeError:
         return False
-    st.session_state.setdefault("generated_images", [])   # list of {"filename","content"}
+    st.session_state.setdefault("generated_images", [])   # list of {"filename","content","key"}
     st.session_state.setdefault("edited_images", [])      # list of {"original","edited","prompt","filename"}
     st.session_state.setdefault("edit_image_bytes", None) # currently loaded image bytes for editing
     st.session_state.setdefault("edit_image_name", "")
@@ -106,21 +106,19 @@ def sanitize_prompt(text: str) -> str:
         ln = line.strip()
         if not ln:
             continue
-        # Skip lines that start with 'Option', 'Key', 'Apply', 'Specificity', 'Keywords', etc.
         if re.match(r'^(Option|Key|Apply|Specificity|Keywords)\b', ln, re.I):
             continue
         if re.match(r'^\d+[\.\)]\s*', ln):
             continue
-        # Skip short header-like lines that end with colon (e.g., "Key Improvements:")
         if len(ln) < 80 and ln.endswith(':'):
             continue
-        # Skip lines that look like list bullets (e.g., starting with '-')
         if ln.startswith('-') or ln.startswith('*'):
             continue
         lines.append(ln)
     cleaned = ' '.join(lines)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned or text
+
 
 def safe_get_enhanced_text(resp):
     if resp is None:
@@ -134,6 +132,7 @@ def safe_get_enhanced_text(resp):
             pass
     return str(resp)
 
+
 def get_image_bytes_from_genobj(gen_obj):
     if isinstance(gen_obj, (bytes, bytearray)):
         return bytes(gen_obj)
@@ -145,6 +144,7 @@ def get_image_bytes_from_genobj(gen_obj):
             if hasattr(gen_obj.image, attr):
                 return getattr(gen_obj.image, attr)
     return None
+
 
 def show_image_safe(image_source, caption="Image"):
     try:
@@ -183,6 +183,7 @@ def init_vertex(project_id, credentials_info, location="us-central1"):
         st.error(f"Vertex init failed: {e}")
         return False
 
+
 def get_imagen_model():
     if MODEL_CACHE["imagen"]:
         return MODEL_CACHE["imagen"]
@@ -195,6 +196,7 @@ def get_imagen_model():
         st.error(f"Failed to load Imagen model: {e}")
         return None
 
+
 def get_nano_banana_model():
     if MODEL_CACHE["nano"]:
         return MODEL_CACHE["nano"]
@@ -206,6 +208,7 @@ def get_nano_banana_model():
     except Exception as e:
         st.error(f"Failed to load Nano Banana model: {e}")
         return None
+
 
 def get_text_model():
     if MODEL_CACHE["text"]:
@@ -256,7 +259,6 @@ def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
                 if cleaned:
                     enhanced_prompt = cleaned
             except Exception as e:
-                # fallback to original prompt
                 st.warning(f"Prompt refinement failed, using raw prompt. ({e})")
                 enhanced_prompt = prompt
 
@@ -274,6 +276,7 @@ def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
         if b:
             out.append(b)
     return out
+
 
 def run_edit_flow(edit_prompt, base_bytes):
     """Edit image bytes using Gemini Nano Banana. Returns edited bytes or None."""
@@ -397,9 +400,78 @@ with left_col:
                             os.makedirs(os.path.dirname(fname), exist_ok=True)
                             with open(fname, "wb") as f:
                                 f.write(b)
-                            st.session_state.generated_images.append({"filename": fname, "content": b})
+
+                            # create a stable short key for this image
+                            short = os.path.basename(fname) + str(i)
+                            key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, short).hex[:8]
+
+                            # store generated image with metadata
+                            entry = {"filename": fname, "content": b, "key": key_hash}
+                            st.session_state.generated_images.append(entry)
+
+                            # display image and iterative-feedback UI
                             show_image_safe(b, caption=os.path.basename(fname))
-                            st.download_button("⬇️ Download", data=b, file_name=os.path.basename(fname), mime="image/png", key=f"dl_gen_{uuid.uuid4().hex}")
+
+                            # feedback text area (iterative editing)
+                            fb_key = f"feedback_{key_hash}"
+                            if fb_key not in st.session_state:
+                                st.session_state[fb_key] = ""
+
+                            finalized_key = f"finalized_{key_hash}"
+                            if finalized_key not in st.session_state:
+                                st.session_state[finalized_key] = False
+
+                            col_a, col_b, col_c = st.columns([3, 2, 1])
+                            with col_a:
+                                st.text_area("Give feedback to edit this image (iterations allowed):", key=fb_key, value=st.session_state[fb_key], height=80)
+                            with col_b:
+                                if st.button("Edit with feedback", key=f"edit_fb_{key_hash}"):
+                                    feedback_text = st.session_state.get(fb_key, "").strip()
+                                    if not feedback_text:
+                                        st.warning("Enter feedback for editing.")
+                                    else:
+                                        with st.spinner("Applying feedback edits..."):
+                                            new_bytes = run_edit_flow(feedback_text, st.session_state.generated_images[-1]["content"]) if st.session_state.generated_images and st.session_state.generated_images[-1]["key"] == key_hash else run_edit_flow(feedback_text, b)
+                                            if new_bytes:
+                                                ts2 = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                                                outfn = f"outputs/edited/edited_{ts2}_{key_hash}.png"
+                                                os.makedirs(os.path.dirname(outfn), exist_ok=True)
+                                                with open(outfn, "wb") as f:
+                                                    f.write(new_bytes)
+                                                st.success("Edited image created from feedback.")
+                                                # replace the stored content for this image so further edits use latest
+                                                # find and update the matching generated image in session_state
+                                                for idx, gi in enumerate(st.session_state.generated_images[::-1]):
+                                                    # iterate reversed to find most recent matching key
+                                                    if gi.get("key") == key_hash:
+                                                        real_idx = len(st.session_state.generated_images) - 1 - idx
+                                                        st.session_state.generated_images[real_idx]["content"] = new_bytes
+                                                        st.session_state.generated_images[real_idx]["filename"] = outfn
+                                                        break
+                                                # also load into editor slot for convenience
+                                                st.session_state["edit_image_bytes"] = new_bytes
+                                                st.session_state["edit_image_name"] = os.path.basename(outfn)
+                                                # show the new edited image immediately
+                                                show_image_safe(new_bytes, caption=f"Edited ({ts2})")
+                                            else:
+                                                st.error("Feedback edit failed or returned no image.")
+                                if st.button("Finalize & Prepare Download", key=f"finalize_{key_hash}"):
+                                    st.session_state[finalized_key] = True
+                                    st.success("Image finalized. Use the download button that just appeared to save the final image.")
+                            with col_c:
+                                # only show download when finalized
+                                if st.session_state.get(finalized_key):
+                                    # find the stored content for this key
+                                    found_bytes = None
+                                    for gi in st.session_state.generated_images[::-1]:
+                                        if gi.get("key") == key_hash:
+                                            found_bytes = gi.get("content")
+                                            break
+                                    if found_bytes:
+                                        st.download_button("⬇️ Download Final Image", data=found_bytes, file_name=os.path.basename(fname), mime="image/png", key=f"dl_final_{key_hash}")
+                                    else:
+                                        st.error("No image data available for download.")
+
                     else:
                         st.error("Generation failed or returned no images.")
 
@@ -418,8 +490,7 @@ with right_col:
         for idx, entry in enumerate(reversed(st.session_state.generated_images[-20:])):
             name = os.path.basename(entry.get("filename", f"gen_{idx}.png"))
             content = entry.get("content")
-            short = name + str(idx)
-            key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, short).hex[:8]
+            key_hash = entry.get("key") or uuid.uuid5(uuid.NAMESPACE_DNS, name + str(idx)).hex[:8]
             with st.expander(name):
                 show_image_safe(content, caption=name)
                 st.download_button("⬇️ Download", data=content, file_name=name, mime="image/png", key=f"hist_dl_{key_hash}")
@@ -507,4 +578,3 @@ with right_col:
                                 st.error("Re-edit returned no image.")
 
 st.markdown("---")
-st.caption("Notes: • If you upload an image (or load one from history into the editor), the prompt edits that image. • If there is no image loaded, the prompt generates images. • If you select a Department other than 'None', the app will run the small prompt refinement step and sanitize its output before sending to Imagen.")
