@@ -431,3 +431,10 @@ with col_right:
 
 st.markdown("---")
 st.caption("Tip: Use 'Edit Inline' to provide edit instructions for any Generated image inside the History panel. Edited images are saved to outputs/edited.")
+
+
+
+
+
+
+#ttttttttttttttttttttt
