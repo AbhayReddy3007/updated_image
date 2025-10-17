@@ -1,13 +1,13 @@
-# streamlit_image_single_flow.py
+# streamlit_image_single_flow_with_dept.py
 import os
-import datetime
+import re
 import uuid
-import hashlib
+import datetime
 from io import BytesIO
 import streamlit as st
 from PIL import Image
 
-# Lazy Vertex imports (so app doesn't try to load SDK at import time)
+# Lazy-import VertexAI so the app doesn't break at import time if SDK isn't installed.
 try:
     import vertexai
     from vertexai.preview.vision_models import ImageGenerationModel
@@ -17,12 +17,11 @@ try:
 except Exception:
     VERTEX_AVAILABLE = False
 
-# --------------------------------------------------
-# Page config + safe session init
-# --------------------------------------------------
-st.set_page_config(page_title="AI Image Generator / Editor (Single Flow)", layout="wide")
-st.title("AI Image Generator + Editor — single flow")
+# ---------------- Page config ----------------
+st.set_page_config(page_title="AI Image Generator + Editor (with Department)", layout="wide")
+st.title("AI Image Generator + Editor (with Department)")
 
+# ---------------- Safe session initialization ----------------
 def safe_init_session():
     try:
         _ = st.session_state
@@ -30,15 +29,141 @@ def safe_init_session():
         return False
     st.session_state.setdefault("generated_images", [])   # list of {"filename","content"}
     st.session_state.setdefault("edited_images", [])      # list of {"original","edited","prompt","filename"}
-    st.session_state.setdefault("edit_image_bytes", None) # image currently loaded into editor
+    st.session_state.setdefault("edit_image_bytes", None) # currently loaded image bytes for editing
     st.session_state.setdefault("edit_image_name", "")
     return True
 
 safe_init_session()
 
-# --------------------------------------------------
-# Model lazy initializers
-# --------------------------------------------------
+# ---------------- Prompt templates and style map ----------------
+PROMPT_TEMPLATES = {
+    "None": """
+Don't change the user's prompt. Use it as-is.
+User's raw prompt:
+"{USER_PROMPT}"
+
+Refined prompt:
+""",
+    "General": """
+You are an expert image prompt engineer. Expand the user's short prompt into a clear, concise, and vivid prompt suitable for photoreal image generation.
+User's raw prompt:
+"{USER_PROMPT}"
+
+Refined prompt:
+""",
+    "Design": """
+You are a senior prompt engineer focused on design visuals. Expand the user's prompt into a design-oriented image prompt including composition, color palette, textures, and style.
+User's raw prompt:
+"{USER_PROMPT}"
+
+Refined prompt:
+""",
+    "Marketing": """
+You are a senior prompt engineer for marketing imagery. Turn the user's raw prompt into an ad-ready, campaign-friendly, professional image prompt. If the user references a brand, include that brand's tone in the prompt.
+User's raw prompt:
+"{USER_PROMPT}"
+
+Refined prompt:
+""",
+    "DPEX": """
+You are a prompt engineer creating technology/IT visuals. Expand the user's prompt for an IT/tech context (data center, futuristic UI, holograms) when appropriate.
+User's raw prompt:
+"{USER_PROMPT}"
+
+Refined prompt:
+""",
+    "HR": """
+You are a prompt engineer creating workplace and HR visuals. Expand the user's prompt into an inclusive, professional workplace scene if relevant.
+User's raw prompt:
+"{USER_PROMPT}"
+
+Refined prompt:
+""",
+    "Business": """
+You are a prompt engineer creating corporate visuals. Expand the user's prompt into a polished, business-oriented photo (boardrooms, pitch decks).
+User's raw prompt:
+"{USER_PROMPT}"
+
+Refined prompt:
+"""
+}
+
+STYLE_DESCRIPTIONS = {
+    "None": "No special styling — keep it natural and faithful to the user's idea.",
+    "Smart": "Clean, balanced, professional look.",
+    "Cinematic": "Film-like composition and dramatic lighting.",
+    "Vibrant": "Bold, saturated colors and high contrast.",
+    "Photorealistic": "Highly realistic, lifelike photography style.",
+}
+
+# ---------------- Helpers ----------------
+def sanitize_prompt(text: str) -> str:
+    """Strip headings, numbered options and labels often produced by a prompt refiner."""
+    if not text:
+        return text
+    lines = []
+    for line in text.splitlines():
+        ln = line.strip()
+        if not ln:
+            continue
+        # Skip lines that start with 'Option', 'Key', 'Apply', 'Specificity', 'Keywords', etc.
+        if re.match(r'^(Option|Key|Apply|Specificity|Keywords)\b', ln, re.I):
+            continue
+        if re.match(r'^\d+[\.\)]\s*', ln):
+            continue
+        # Skip short header-like lines that end with colon (e.g., "Key Improvements:")
+        if len(ln) < 80 and ln.endswith(':'):
+            continue
+        # Skip lines that look like list bullets (e.g., starting with '-')
+        if ln.startswith('-') or ln.startswith('*'):
+            continue
+        lines.append(ln)
+    cleaned = ' '.join(lines)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned or text
+
+def safe_get_enhanced_text(resp):
+    if resp is None:
+        return ""
+    if hasattr(resp, "text") and resp.text:
+        return resp.text
+    if hasattr(resp, "candidates") and resp.candidates:
+        try:
+            return resp.candidates[0].content.parts[0].text
+        except Exception:
+            pass
+    return str(resp)
+
+def get_image_bytes_from_genobj(gen_obj):
+    if isinstance(gen_obj, (bytes, bytearray)):
+        return bytes(gen_obj)
+    for attr in ("image_bytes", "_image_bytes"):
+        if hasattr(gen_obj, attr):
+            return getattr(gen_obj, attr)
+    if hasattr(gen_obj, "image") and gen_obj.image:
+        for attr in ("image_bytes", "_image_bytes"):
+            if hasattr(gen_obj.image, attr):
+                return getattr(gen_obj.image, attr)
+    return None
+
+def show_image_safe(image_source, caption="Image"):
+    try:
+        if isinstance(image_source, (bytes, bytearray)):
+            st.image(image_source, caption=caption, use_container_width=True)
+        elif isinstance(image_source, Image.Image):
+            st.image(image_source, caption=caption, use_container_width=True)
+        else:
+            st.image(Image.open(BytesIO(image_source)), caption=caption, use_container_width=True)
+    except TypeError:
+        # fallback for older Streamlit
+        if isinstance(image_source, (bytes, bytearray)):
+            st.image(image_source, caption=caption, use_column_width=True)
+        else:
+            st.image(Image.open(BytesIO(image_source)), caption=caption, use_column_width=True)
+    except Exception as e:
+        st.error(f"Failed to display image: {e}")
+
+# ---------------- Vertex lazy loaders ----------------
 MODEL_CACHE = {"imagen": None, "nano": None, "text": None}
 
 def init_vertex(project_id, credentials_info, location="us-central1"):
@@ -79,7 +204,7 @@ def get_nano_banana_model():
         MODEL_CACHE["nano"] = GenerativeModel("gemini-2.5-flash-image")
         return MODEL_CACHE["nano"]
     except Exception as e:
-        st.error(f"Failed to load Nano Banana (editor) model: {e}")
+        st.error(f"Failed to load Nano Banana model: {e}")
         return None
 
 def get_text_model():
@@ -94,56 +219,13 @@ def get_text_model():
         st.error(f"Failed to load text model: {e}")
         return None
 
-# --------------------------------------------------
-# Utilities for image bytes and display
-# --------------------------------------------------
-def show_image_safe(image_source, caption="Image"):
-    try:
-        if isinstance(image_source, (bytes, bytearray)):
-            st.image(image_source, caption=caption, use_container_width=True)
-        elif isinstance(image_source, Image.Image):
-            st.image(image_source, caption=caption, use_container_width=True)
-        else:
-            st.image(Image.open(BytesIO(image_source)), caption=caption, use_container_width=True)
-    except TypeError:
-        # Fallback for older Streamlit
-        if isinstance(image_source, (bytes, bytearray)):
-            st.image(image_source, caption=caption, use_column_width=True)
-        else:
-            st.image(Image.open(BytesIO(image_source)), caption=caption, use_column_width=True)
-
-def get_image_bytes_from_genobj(gen_obj):
-    if isinstance(gen_obj, (bytes, bytearray)):
-        return bytes(gen_obj)
-    for attr in ("image_bytes", "_image_bytes"):
-        if hasattr(gen_obj, attr):
-            return getattr(gen_obj, attr)
-    if hasattr(gen_obj, "image") and gen_obj.image:
-        for attr in ("image_bytes", "_image_bytes"):
-            if hasattr(gen_obj.image, attr):
-                return getattr(gen_obj.image, attr)
-    return None
-
-def safe_get_enhanced_text(resp):
-    if resp is None:
-        return ""
-    if hasattr(resp, "text") and resp.text:
-        return resp.text
-    if hasattr(resp, "candidates") and resp.candidates:
-        try:
-            return resp.candidates[0].content.parts[0].text
-        except Exception:
-            pass
-    return str(resp)
-
-# --------------------------------------------------
-# Core flows: generate & edit
-# --------------------------------------------------
-def generate_images_from_prompt(prompt, style_desc="", n_images=1):
-    """Use Imagen to generate images from prompt. Returns list of bytes."""
+# ---------------- Core flows ----------------
+def generate_images_from_prompt(prompt, dept="None", style_desc="", n_images=1):
+    """Generate images with Imagen. Refine prompt only when dept != 'None' and sanitize result."""
     if not VERTEX_AVAILABLE:
         st.error("VertexAI SDK not available in this environment.")
         return []
+
     creds = st.secrets.get("gcp_service_account")
     if not creds or not creds.get("project_id"):
         st.error("Missing GCP credentials in Streamlit secrets: 'gcp_service_account'")
@@ -158,36 +240,43 @@ def generate_images_from_prompt(prompt, style_desc="", n_images=1):
         st.error("Imagen model unavailable.")
         return []
 
-    # optional refinement with text model (if available)
-    text_model = get_text_model()
+    # Only refine when department selected
     enhanced_prompt = prompt
-    if text_model:
-        try:
-            refinement = f"Refine the prompt for image generation:\n\n{prompt}\n\nApply style: {style_desc}"
-            text_resp = text_model.generate_content(refinement)
-            maybe = safe_get_enhanced_text(text_resp).strip()
-            if maybe:
-                enhanced_prompt = maybe
-        except Exception:
-            # ignore refinement errors; keep original prompt
-            enhanced_prompt = prompt
+    if dept and dept != "None":
+        text_model = get_text_model()
+        if text_model:
+            try:
+                template = PROMPT_TEMPLATES.get(dept, PROMPT_TEMPLATES["General"])
+                refinement_input = template.replace("{USER_PROMPT}", prompt)
+                if style_desc:
+                    refinement_input += f"\n\nApply style: {style_desc}"
+                text_resp = text_model.generate_content(refinement_input)
+                maybe = safe_get_enhanced_text(text_resp).strip()
+                cleaned = sanitize_prompt(maybe)
+                if cleaned:
+                    enhanced_prompt = cleaned
+            except Exception as e:
+                # fallback to original prompt
+                st.warning(f"Prompt refinement failed, using raw prompt. ({e})")
+                enhanced_prompt = prompt
 
+    # call Imagen
     try:
         resp = imagen.generate_images(prompt=enhanced_prompt, number_of_images=n_images)
     except Exception as e:
         st.error(f"Imagen generate_images failed: {e}")
         return []
 
-    out_bytes = []
+    out = []
     for i in range(min(n_images, len(resp.images))):
         gen_obj = resp.images[i]
         b = get_image_bytes_from_genobj(gen_obj)
         if b:
-            out_bytes.append(b)
-    return out_bytes
+            out.append(b)
+    return out
 
 def run_edit_flow(edit_prompt, base_bytes):
-    """Use Gemini Nano Banana to edit an existing image bytes. Returns edited bytes or None."""
+    """Edit image bytes using Gemini Nano Banana. Returns edited bytes or None."""
     if not VERTEX_AVAILABLE:
         st.error("VertexAI SDK not available in this environment.")
         return None
@@ -218,7 +307,7 @@ Instructions:
     try:
         response = nano.generate_content([edit_instruction, input_image])
     except Exception as e:
-        st.error(f"Nano Banana generate failed: {e}")
+        st.error(f"Nano Banana call failed: {e}")
         return None
 
     for candidate in getattr(response, "candidates", []):
@@ -227,23 +316,28 @@ Instructions:
                 return part.inline_data.data
 
     if hasattr(response, "text") and response.text:
-        st.warning(f"Editor returned text instead of an image:\n\n{response.text}")
+        st.warning("Editor returned text instead of an image. See message above.")
     else:
         st.error("Editor returned no inline image.")
     return None
 
-# --------------------------------------------------
-# UI: single view where action decided by whether there is an uploaded image
-# --------------------------------------------------
+# ---------------- UI (single-flow) ----------------
 left_col, right_col = st.columns([3, 1])
 
 with left_col:
     st.subheader("Create or Edit — single flow")
-    st.markdown("**How it works:** If you upload an image, the prompt will edit that image (Nano Banana). If you don't upload an image, the prompt will generate new images (Imagen).")
+    st.markdown("**How it works:** If you upload an image (or load one from history into the editor), the prompt edits that image (Nano Banana). If you do not upload an image, the prompt generates new images (Imagen).")
 
-    uploaded_file = st.file_uploader("Upload an image to edit (optional)", type=["png","jpg","jpeg","webp"])
+    # Department selector (re-added)
+    dept = st.selectbox("🏢 Department (controls prompt refinement)", list(PROMPT_TEMPLATES.keys()), index=0)
+
+    # Style
+    style = st.selectbox("🎨 Style (optional)", list(STYLE_DESCRIPTIONS.keys()), index=0)
+    style_desc = "" if style == "None" else STYLE_DESCRIPTIONS.get(style, "")
+
+    # Upload an image (optional)
+    uploaded_file = st.file_uploader("Upload an image to edit (optional) — if present the prompt will edit this image", type=["png","jpg","jpeg","webp"])
     if uploaded_file:
-        # convert to PNG bytes
         raw = uploaded_file.read()
         pil = Image.open(BytesIO(raw)).convert("RGB")
         buf = BytesIO()
@@ -253,35 +347,32 @@ with left_col:
         st.session_state["edit_image_name"] = getattr(uploaded_file, "name", f"uploaded_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
         show_image_safe(buf_bytes, caption=f"Uploaded: {st.session_state['edit_image_name']}")
     else:
-        # if no uploaded file but session has previously set edit_image_bytes, show it (user may have used History->Edit)
         if st.session_state.get("edit_image_bytes"):
             show_image_safe(st.session_state["edit_image_bytes"], caption=f"Editor loaded: {st.session_state.get('edit_image_name','Selected Image')}")
 
-    st.text_area("Enter prompt (for generation or editing)", key="main_prompt", height=140, placeholder="If you uploaded an image this will edit that image; otherwise it will generate new images.")
-    # number of images only relevant for generation (but harmless to show)
+    # Prompt and number of images
+    prompt = st.text_area("Enter prompt (for generation or editing)", key="main_prompt", height=140, placeholder="If you uploaded an image this will edit that image; otherwise it will generate new images.")
     num_images = st.slider("Number of images to generate (when generating)", min_value=1, max_value=4, value=1, key="num_images_slider")
-    style = st.selectbox("Style (optional)", ["None", "Smart", "Cinematic", "Vibrant"], index=0, key="style_choice")
 
-    # action button
+    # Run button
     if st.button("Run"):
-        prompt_text = (st.session_state.get("main_prompt") or "").strip()
+        prompt_text = (prompt or "").strip()
         if not prompt_text:
             st.warning("Please enter a prompt.")
         else:
-            # Decide flow: edit if an image is present in session_state; otherwise generate
             base_image = st.session_state.get("edit_image_bytes")
             if base_image:
                 # EDIT FLOW
                 with st.spinner("Editing image with Nano Banana..."):
                     edited = run_edit_flow(prompt_text, base_image)
                     if edited:
-                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                        out_fn = f"outputs/edited/edited_{timestamp}_{uuid.uuid4().hex[:6]}.png"
+                        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        out_fn = f"outputs/edited/edited_{ts}_{uuid.uuid4().hex[:6]}.png"
+                        os.makedirs(os.path.dirname(out_fn), exist_ok=True)
                         with open(out_fn, "wb") as f:
                             f.write(edited)
-                        # show result and add to history
                         st.success("Edited image created below.")
-                        show_image_safe(edited, caption=f"Edited ({timestamp})")
+                        show_image_safe(edited, caption=f"Edited ({ts})")
                         st.download_button("⬇️ Download Edited", data=edited, file_name=os.path.basename(out_fn), mime="image/png", key=f"dl_edit_{uuid.uuid4().hex}")
                         st.session_state.edited_images.append({
                             "original": base_image,
@@ -289,7 +380,7 @@ with left_col:
                             "prompt": prompt_text,
                             "filename": out_fn
                         })
-                        # load the edited image into editor for potential re-editing
+                        # load the edited image into editor for potential re-edit
                         st.session_state["edit_image_bytes"] = edited
                         st.session_state["edit_image_name"] = os.path.basename(out_fn)
                     else:
@@ -297,13 +388,13 @@ with left_col:
             else:
                 # GENERATION FLOW
                 with st.spinner("Generating images with Imagen..."):
-                    style_desc = "" if style == "None" else style
-                    generated_list = generate_images_from_prompt(prompt_text, style_desc=style_desc, n_images=num_images)
-                    if generated_list:
-                        st.success(f"Generated {len(generated_list)} image(s).")
-                        for i, b in enumerate(generated_list):
+                    generated = generate_images_from_prompt(prompt_text, dept=dept, style_desc=style_desc, n_images=num_images)
+                    if generated:
+                        st.success(f"Generated {len(generated)} image(s).")
+                        for i, b in enumerate(generated):
                             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             fname = f"outputs/generated/gen_{ts}_{i}.png"
+                            os.makedirs(os.path.dirname(fname), exist_ok=True)
                             with open(fname, "wb") as f:
                                 f.write(b)
                             st.session_state.generated_images.append({"filename": fname, "content": b})
@@ -312,46 +403,47 @@ with left_col:
                     else:
                         st.error("Generation failed or returned no images.")
 
-    # Provide a button to clear the editor image (so next prompt generates)
+    # Clear editor button (switch to generation)
     if st.button("Clear editor (switch to generation)"):
         st.session_state["edit_image_bytes"] = None
         st.session_state["edit_image_name"] = ""
 
-# --------------------------------------------------
-# Right column: history + inline edits + re-edit
-# --------------------------------------------------
+# ---------------- Right column: history + inline editing + re-edit ----------------
 with right_col:
     st.subheader("📂 History")
 
-    # Generated history
+    # Generated images
     if st.session_state.get("generated_images"):
-        st.markdown("#### Generated Images")
+        st.markdown("### Generated Images")
         for idx, entry in enumerate(reversed(st.session_state.generated_images[-20:])):
             name = os.path.basename(entry.get("filename", f"gen_{idx}.png"))
             content = entry.get("content")
-            short_hash = hashlib.md5(name.encode()).hexdigest()[:8]
+            short = name + str(idx)
+            key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, short).hex[:8]
             with st.expander(name):
                 show_image_safe(content, caption=name)
-                st.download_button("⬇️ Download", data=content, file_name=name, mime="image/png", key=f"hist_dl_{short_hash}")
-                if st.button("✏️ Edit this image", key=f"hist_edit_{short_hash}"):
-                    # put into editor and reload page so left UI shows it
+                st.download_button("⬇️ Download", data=content, file_name=name, mime="image/png", key=f"hist_dl_{key_hash}")
+                if st.button("✏️ Edit this image (load into editor)", key=f"hist_edit_{key_hash}"):
                     st.session_state["edit_image_bytes"] = content
                     st.session_state["edit_image_name"] = name
                     st.experimental_rerun()
-                st.markdown("---")
-                st.write("Edit inline (quick):")
-                inline_key = f"inline_prompt_{short_hash}"
-                st.text_area("Edit instructions", key=inline_key, value=st.session_state.get(inline_key,""), height=80)
-                if st.button("Edit Inline", key=f"inline_btn_{short_hash}"):
-                    prompt_val = st.session_state.get(inline_key,"").strip()
-                    if not prompt_val:
+
+                # Inline quick edit
+                inline_key = f"inline_prompt_{key_hash}"
+                if inline_key not in st.session_state:
+                    st.session_state[inline_key] = ""
+                st.text_area("Quick edit instructions (inline)", key=inline_key, value=st.session_state[inline_key], height=80)
+                if st.button("Edit Inline", key=f"inline_btn_{key_hash}"):
+                    ptxt = st.session_state.get(inline_key, "").strip()
+                    if not ptxt:
                         st.warning("Enter edit instructions.")
                     else:
                         with st.spinner("Editing image inline..."):
-                            edited_bytes = run_edit_flow(prompt_val, content)
+                            edited_bytes = run_edit_flow(ptxt, content)
                             if edited_bytes:
                                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                                outfn = f"outputs/edited/edited_{ts}_{short_hash}.png"
+                                outfn = f"outputs/edited/edited_{ts}_{key_hash}.png"
+                                os.makedirs(os.path.dirname(outfn), exist_ok=True)
                                 with open(outfn, "wb") as f:
                                     f.write(edited_bytes)
                                 st.success("Edited image created.")
@@ -360,52 +452,59 @@ with right_col:
                                 st.session_state.edited_images.append({
                                     "original": content,
                                     "edited": edited_bytes,
-                                    "prompt": prompt_val,
+                                    "prompt": ptxt,
                                     "filename": outfn
                                 })
                             else:
                                 st.error("Edit returned no image.")
 
-    # Edited history with re-edit (chain)
+    # Edited images (re-edit chain)
     if st.session_state.get("edited_images"):
-        st.markdown("#### Edited Images (re-editable)")
+        st.markdown("### Edited Images (re-editable)")
         for idx, entry in enumerate(reversed(st.session_state.edited_images[-40:])):
-            name = os.path.basename(entry.get("filename", f"edited_{idx}.png"))
-            short_hash = hashlib.md5(name.encode()).hexdigest()[:8]
-            with st.expander(f"{name} — {entry.get('prompt','')}"):
+            fn = entry.get("filename", f"edited_{idx}.png")
+            name = os.path.basename(fn)
+            edited_bytes = entry.get("edited")
+            prompt_prev = entry.get("prompt", "")
+            key_hash = uuid.uuid5(uuid.NAMESPACE_DNS, name + str(idx)).hex[:8]
+            with st.expander(f"{name} — {prompt_prev[:60]}"):
                 col1, col2 = st.columns(2)
                 with col1:
-                    show_image_safe(entry.get("original"), caption="Original")
+                    show_image_safe(entry.get("original"), caption="Original (before this edit)")
                 with col2:
-                    show_image_safe(entry.get("edited"), caption="Edited result")
-                st.markdown("---")
-                rekey = f"reedit_prompt_{short_hash}"
-                st.text_area("Re-edit instructions", key=rekey, value=st.session_state.get(rekey, entry.get("prompt","")), height=90)
-                if st.button("Re-Edit Inline", key=f"reedit_btn_{short_hash}"):
-                    re_prompt = st.session_state.get(rekey, "").strip()
-                    if not re_prompt:
-                        st.warning("Please enter re-edit instructions.")
+                    show_image_safe(edited_bytes, caption="Edited result")
+
+                # re-edit textarea (pre-populate with previous prompt to tweak)
+                reedit_key = f"reedit_prompt_{key_hash}"
+                if reedit_key not in st.session_state:
+                    st.session_state[reedit_key] = prompt_prev or ""
+                st.text_area("Re-edit instructions (tweak previous):", key=reedit_key, value=st.session_state[reedit_key], height=100)
+
+                if st.button("Re-Edit Inline", key=f"reedit_btn_{key_hash}"):
+                    retext = st.session_state.get(reedit_key, "").strip()
+                    if not retext:
+                        st.warning("Enter re-edit instructions.")
                     else:
                         with st.spinner("Re-editing..."):
-                            new_edited = run_edit_flow(re_prompt, entry.get("edited"))
+                            new_edited = run_edit_flow(retext, edited_bytes)
                             if new_edited:
                                 ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                                outfn = f"outputs/edited/reedited_{ts}_{short_hash}.png"
+                                outfn = f"outputs/edited/reedited_{ts}_{key_hash}.png"
+                                os.makedirs(os.path.dirname(outfn), exist_ok=True)
                                 with open(outfn, "wb") as f:
                                     f.write(new_edited)
                                 st.success("Re-edited image created.")
                                 show_image_safe(new_edited, caption=f"Re-Edited {name}")
                                 st.download_button("⬇️ Download Re-Edited", data=new_edited, file_name=os.path.basename(outfn), mime="image/png", key=f"reedit_dl_{uuid.uuid4().hex}")
-                                # append chain: previous edited becomes original
+                                # append as new edited entry so you can chain again
                                 st.session_state.edited_images.append({
-                                    "original": entry.get("edited"),
+                                    "original": edited_bytes,
                                     "edited": new_edited,
-                                    "prompt": re_prompt,
+                                    "prompt": retext,
                                     "filename": outfn
                                 })
                             else:
                                 st.error("Re-edit returned no image.")
 
 st.markdown("---")
-st.caption("Notes: • If you upload an image, the prompt will edit that image. • If you clear the editor (Clear editor), the prompt will generate new images. • Make sure your Vertex credentials are set in Streamlit secrets to use Imagen/Nano Banana.")
-
+st.caption("Notes: • If you upload an image (or load one from history into the editor), the prompt edits that image. • If there is no image loaded, the prompt generates images. • If you select a Department other than 'None', the app will run the small prompt refinement step and sanitize its output before sending to Imagen.")
