@@ -609,7 +609,7 @@ with left_col:
                 )
             with col_edit:
                 # stable edit button - loads the image into the editor so it becomes re-editable
-                if st.button("✏️ Continue editing ", key=f"edit_gen_{key_hash}"):
+                if st.button("✏️ Edit ", key=f"edit_gen_{key_hash}"):
                     st.session_state["edit_image_bytes"] = b
                     st.session_state["edit_image_name"] = os.path.basename(fname)
                     st.session_state["edit_iterations"] = 0
@@ -642,7 +642,7 @@ with left_col:
                 with col_dl:
                     st.download_button("⬇️ Download Edited", data=edited_bytes, file_name=name, mime="image/png", key=f"hist_dl_{hash_k}")
                 with col_edit:
-                    if st.button("✏️ Continue editing this version", key=f"hist_edit_{hash_k}"):
+                    if st.button("✏️ Edit this version", key=f"hist_edit_{hash_k}"):
                         st.session_state["edit_image_bytes"] = edited_bytes
                         st.session_state["edit_image_name"] = name
                         st.session_state["edit_iterations"] = 0
