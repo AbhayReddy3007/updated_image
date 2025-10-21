@@ -20,7 +20,7 @@ except Exception:
 
 # ---------------- Page config ----------------
 st.set_page_config(page_title="AI Image Generator + Editor", layout="wide")
-st.title("AI Image Generator + Iterative Editor")
+st.title("AI Image Generator + Editor")
 
 # ---------------- Session initialization ----------------
 def safe_init_session():
