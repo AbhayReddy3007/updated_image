@@ -533,12 +533,7 @@ with left_col:
                                 st.session_state["edit_image_name"] = current_name
                                 st.session_state["edit_iterations"] = 0
                                 st.experimental_rerun()
-                        with col_clear:
-                            if st.button("Clear editor (switch to generation)", key=f"clear_editor_{safe_key}"):
-                                st.session_state["edit_image_bytes"] = None
-                                st.session_state["edit_image_name"] = ""
-                                st.session_state["edit_iterations"] = 0
-                                st.experimental_rerun()
+                        
                         # --------------------------
 
                         # Replace the editor image with the freshly edited bytes so user can re-edit
