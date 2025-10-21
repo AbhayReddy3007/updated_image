@@ -19,7 +19,7 @@ except Exception:
     VERTEX_AVAILABLE = False
 
 # ---------------- Page config ----------------
-st.set_page_config(page_title="AI Image Generator + Iterative Editor", layout="wide")
+st.set_page_config(page_title="AI Image Generator + Editor", layout="wide")
 st.title("AI Image Generator + Iterative Editor")
 
 # ---------------- Session initialization ----------------
