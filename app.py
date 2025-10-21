@@ -485,7 +485,8 @@ with left_col:
         if st.session_state.get("edit_image_bytes"):
             show_image_safe(st.session_state["edit_image_bytes"], caption=f"Editor loaded: {st.session_state.get('edit_image_name','Selected Image')}")
 
-    prompt = st.text_area("Enter prompt"), key="main_prompt", height=140,
+    prompt = st.text_area("Enter prompt", key="main_prompt", height=140, placeholder="")
+    
                          
     num_images = 1
 
