@@ -660,8 +660,3 @@ with right_col:
     st.session_state["max_edit_iterations"] = int(max_it)
 
     
-
-
-
-st.markdown("---")
-st.caption("Note: each edit calls an external model (cost/time). Use the iteration cap to avoid runaway usage.")
