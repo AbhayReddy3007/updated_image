@@ -3,6 +3,7 @@ import os
 import re
 import uuid
 import datetime
+import hashlib
 from io import BytesIO
 
 import streamlit as st
@@ -377,18 +378,39 @@ with left_col:
                         st.success("Edited image created.")
                         show_image_safe(edited, caption=f"Edited ({ts})")
 
-                        # Download the edited output (final bytes at this moment)
-                        st.download_button(
-                            "⬇️ Download Edited (current)",
-                            data=edited,
-                            file_name=os.path.basename(out_fn),
-                            mime="image/png",
-                            key=f"dl_edit_{uuid.uuid4().hex}"
-                        )
+                        # --------------------------
+                        # NEW: 3-column controls for current edited image: Download | Edit (load into editor) | Clear
+                        # --------------------------
+                        current_name = os.path.basename(out_fn)
+                        safe_key = hashlib.sha1(current_name.encode()).hexdigest()[:12]
+
+                        col_dl, col_edit, col_clear = st.columns([1,1,1])
+                        with col_dl:
+                            st.download_button(
+                                "⬇️ Download Edited (current)",
+                                data=edited,
+                                file_name=current_name,
+                                mime="image/png",
+                                key=f"dl_edit_{safe_key}"
+                            )
+                        with col_edit:
+                            if st.button("✏️ Edit this image (load into editor)", key=f"edit_current_{safe_key}"):
+                                # put the current edited bytes into the editor slot (so the next Run will edit this image)
+                                st.session_state["edit_image_bytes"] = edited
+                                st.session_state["edit_image_name"] = current_name
+                                st.session_state["edit_iterations"] = 0
+                                st.experimental_rerun()
+                        with col_clear:
+                            if st.button("Clear editor (switch to generation)", key=f"clear_editor_{safe_key}"):
+                                st.session_state["edit_image_bytes"] = None
+                                st.session_state["edit_image_name"] = ""
+                                st.session_state["edit_iterations"] = 0
+                                st.experimental_rerun()
+                        # --------------------------
 
                         # Replace the editor image with the freshly edited bytes so user can re-edit
                         st.session_state["edit_image_bytes"] = edited
-                        st.session_state["edit_image_name"] = os.path.basename(out_fn)
+                        st.session_state["edit_image_name"] = current_name
 
                         # increment iteration counter and append to edited history chain
                         st.session_state["edit_iterations"] = st.session_state.get("edit_iterations", 0) + 1
@@ -480,7 +502,7 @@ with left_col:
             prompt_prev = entry.get("prompt", "")
             ts = entry.get("ts", "")
             # uniqueish key for widgets in this loop
-            hash_k = uuid.uuid5(uuid.NAMESPACE_DNS, name + ts + str(idx)).hex[:8]
+            hash_k = hashlib.sha1((name + ts + str(idx)).encode()).hexdigest()[:12]
 
             with st.expander(f"{name} — {prompt_prev[:80]}"):
                 col1, col2 = st.columns(2)
@@ -498,7 +520,6 @@ with left_col:
                     if st.button("✏️ Continue editing this version", key=f"hist_edit_{hash_k}"):
                         st.session_state["edit_image_bytes"] = edited_bytes
                         st.session_state["edit_image_name"] = name
-                        # set iteration count to how many edits we already performed or keep counting from here
                         st.session_state["edit_iterations"] = 0
                         st.experimental_rerun()
 
